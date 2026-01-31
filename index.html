@@ -16,6 +16,21 @@
         <button id="fullscreenBtn" class="fullscreen-btn" title="Tela Cheia (F11)">
             📺 F11
         </button>
+
+        <!-- Ajustes rápidos do mostrador de ângulos -->
+        <div id="aimSettings" class="aim-settings" title="Ajustes do mostrador de ângulos">
+            <div class="aim-settings-title">🎯 ÂNGULOS</div>
+            <label class="aim-settings-row">
+                <span>Opacidade</span>
+                <input id="aimOpacity" type="range" min="0.03" max="0.30" step="0.01" value="0.12">
+            </label>
+            <label class="aim-settings-row">
+                <span>Tamanho</span>
+                <input id="aimScale" type="range" min="0.70" max="1.60" step="0.05" value="1.00">
+            </label>
+            <div class="aim-settings-hint">↑/↓: toque ou segure • [ ]: fino</div>
+        </div>
+
         <div class="controls">
             🏃 Setas: Mover/Mirar | ⚔️ Espaço/X: Atirar | 🦘 Z: Pular | 🔄 R: Reiniciar<br>
             🎯 Múltiplas armas | 💎 Power-ups | 👾 Inimigos inteligentes | 💥 Explosões épicas!<br>
@@ -75,7 +90,7 @@
             </div>
         </div>
     </div>
-    <script src="gemini_integration.js"></script>
-    <script src="game.js"></script>
+    <script src="gemini_integration.js?v=2"></script>
+    <script src="game.js?v=20260131_8"></script>
 </body>
 </html>

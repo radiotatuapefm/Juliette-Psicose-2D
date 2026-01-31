@@ -355,7 +355,8 @@ let maxJumpHeight = 150;
 // Sistema de plataformas (como no Contra)
 const platforms = [
     // Plataformas principais (chão)
-    { x: 0, y: groundLevel + (frameHeight * scale), width: CANVAS_WIDTH * 13, height: 100, type: 'ground' },
+    // OBS: o "topo" do chão deve alinhar com o mesmo nível em que o personagem pisa
+    { x: 0, y: groundLevel, width: CANVAS_WIDTH * 13, height: 100, type: 'ground' },
     
     // Plataformas elevadas (degraus)
     { x: 200, y: groundLevel - 80, width: 150, height: 20, type: 'platform' },
@@ -429,8 +430,65 @@ const CONTROLS_PANEL_TOGGLE_COOLDOWN = 30; // 30 frames = 0.5 segundos
 // Controles do teclado
 const keys = {};
 
+// Estado de modificadores para mira fina (evita teclas "presas" e inconsistências)
+let aimModifierState = {
+    shift: false,
+    ctrl: false
+};
+
+function updateModifierStateFromEvent(e) {
+    aimModifierState.shift = !!e.shiftKey;
+    aimModifierState.ctrl = !!e.ctrlKey;
+}
+
+function resetInputState() {
+    for (const k in keys) {
+        keys[k] = false;
+    }
+    aimModifierState.shift = false;
+    aimModifierState.ctrl = false;
+    moving = false;
+    backgroundScrolling = false;
+    attacking = false;
+}
+
+// Se o jogo perder foco, evitar Shift/Ctrl/Setas ficarem "presas" (isso quebra o 30°)
+window.addEventListener('blur', resetInputState);
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) resetInputState();
+});
+
 document.addEventListener('keydown', e => {
+    // Evitar scroll/padrões do navegador enquanto joga
+    if (e.code === 'Space' || e.code.startsWith('Arrow')) {
+        e.preventDefault();
+    }
+
     keys[e.code] = true;
+    updateModifierStateFromEvent(e);
+
+    // Mira 360°: cada toque em ArrowUp/ArrowDown gira o ângulo em 10° (sem repetir ao segurar)
+    // 0° = direita, 90° = cima, 180° = esquerda, 270° = baixo
+    if (e.code === 'ArrowUp' && !e.repeat) {
+        aimAngleDisplayDegrees = (aimAngleDisplayDegrees + 10) % 360;
+        console.log('🎯 aimAngleDisplayDegrees:', aimAngleDisplayDegrees);
+    }
+    if (e.code === 'ArrowDown' && !e.repeat) {
+        aimAngleDisplayDegrees = (aimAngleDisplayDegrees - 10) % 360;
+        if (aimAngleDisplayDegrees < 0) aimAngleDisplayDegrees += 360;
+        console.log('🎯 aimAngleDisplayDegrees:', aimAngleDisplayDegrees);
+    }
+
+    // Ajuste fino opcional
+    if (e.code === 'BracketLeft') {
+        aimAngleDisplayDegrees = (aimAngleDisplayDegrees - 5) % 360;
+        if (aimAngleDisplayDegrees < 0) aimAngleDisplayDegrees += 360;
+        console.log('🎯 aimAngleDisplayDegrees:', aimAngleDisplayDegrees);
+    }
+    if (e.code === 'BracketRight') {
+        aimAngleDisplayDegrees = (aimAngleDisplayDegrees + 5) % 360;
+        console.log('🎯 aimAngleDisplayDegrees:', aimAngleDisplayDegrees);
+    }
     
     // === CONTROLES BÁSICOS ===
     if (e.code === 'ArrowRight') {
@@ -448,30 +506,19 @@ document.addEventListener('keydown', e => {
         }
     }
     if (e.code === 'ArrowUp') {
-        // NOVO: Tiro para cima + pulo
-        if (hasWeapon && onGround && !isInSpecialAnim) {
-            // Ativa animação de tiro para cima
-            startSpecialAnimation('weapon_up');
-        } else if (!isInSpecialAnim) {
-            jump();
-        }
+        // ArrowUp é usado apenas para MIRAR (o pulo é no Z)
+        // Não iniciar animação especial aqui, senão bloqueia movimento/tiro em diagonais.
     }
     if (e.code === 'ArrowDown') {
-        // Agachar (manter funcionalidade original)
-        if (posY < CANVAS_HEIGHT - (frameHeight * scale) - 100) posY += playerSpeed;
+        // ArrowDown agora controla a mira (desce a arma)
     }
     
     // === CONTROLES DE COMBATE ===
     if (e.code === 'Space' || e.code === 'KeyX') {
         if (!isInSpecialAnim) {
-            // Tiro normal ou tiro para cima
-            if (keys['ArrowUp'] && hasWeapon) {
-                shootUp();
-                startSpecialAnimation('weapon_shoot_up');
-            } else {
-                shoot();
-                attacking = true;
-            }
+            // Sempre usar shoot() para permitir vários ângulos via combinação de teclas
+            shoot();
+            attacking = true;
         }
     }
     
@@ -532,6 +579,12 @@ document.addEventListener('keydown', e => {
             console.log('Painel de controles:', controlsPanelVisible ? 'Visível' : 'Oculto');
         }
     }
+
+    // Alternar tiro em todos os ângulos (multi = 8 direções ao mesmo tempo)
+    if (e.code === 'KeyT') {
+        const next = currentShootType === 'multi' ? 'normal' : 'multi';
+        changeShootType(next);
+    }
     
     // === CONTROLE DO ESCUDO ===
     if (e.code === 'KeyD') {
@@ -584,13 +637,18 @@ document.addEventListener('keydown', e => {
 });
 
 document.addEventListener('keyup', e => {
+    if (e.code === 'Space' || e.code.startsWith('Arrow')) {
+        e.preventDefault();
+    }
+
     keys[e.code] = false;
+    updateModifierStateFromEvent(e);
     
     if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
         moving = false;
         backgroundScrolling = false;
     }
-    if (e.code === 'Space') {
+    if (e.code === 'Space' || e.code === 'KeyX') {
         attacking = false;
     }
     if (e.code === 'KeyD') {
@@ -740,32 +798,19 @@ function shoot() {
 function getShootDirectionByType() {
     const baseSpeed = weapons[weaponType].speed;
     const typeSettings = shootTypeSettings[currentShootType];
-    
-    // Se não há configuração especial, usar sistema original
-    if (!typeSettings || !typeSettings.forceDirection) {
+
+    // Mira 360° é o padrão. Só exceção é o modo multi.
+    if (currentShootType !== 'multi') {
         return getShootDirection();
     }
-    
+
     // Se é tipo 'multi', disparar em múltiplas direções
-    if (typeSettings.forceDirection === 'multi') {
+    if (typeSettings && typeSettings.forceDirection === 'multi') {
         return getMultiDirectionShoot();
     }
-    
-    // Se é direção forçada, usar o ângulo fixo
-    const forcedDirection = typeSettings.forceDirection;
-    let finalAngle = forcedDirection.angle;
-    let finalSpeed = baseSpeed * (forcedDirection.speed || 1);
-    
-    // Para tiros direcionais, ajustar baseado na direção do personagem
-    if (currentShootType === 'diagonal-up') {
-        // Diagonal para cima segue a direção do personagem
-        finalAngle = facingRight ? -45 : -135;
-    }
-    
-    return {
-        angle: finalAngle,
-        speed: finalSpeed
-    };
+
+    // Fallback (segurança)
+    return { angle: 0, speed: baseSpeed };
 }
 
 // === NOVA FUNÇÃO: SISTEMA DE TIRO MÚLTIPLO ===
@@ -795,86 +840,71 @@ function getMultiDirectionShoot() {
     };
 }
 
+// Mira 360° em graus no estilo "transferidor":
+// 0° = direita, 90° = cima, 180° = esquerda, 270° = baixo
+// Controlado pelo usuário durante o jogo:
+// - toque em ArrowUp: +10°
+// - toque em ArrowDown: -10°
+// - [ e ] ajustam fino em 5° (opcional)
+let aimAngleDisplayDegrees = 0;
+
+// Transparência do mostrador (padrão um pouco mais visível)
+let aimIndicatorOpacity = 0.12;
+
+// Escala do mostrador (régua) - controlada por slider
+let aimIndicatorScale = 1.0;
+
+// Rotação contínua ao segurar ↑/↓
+let aimHoldLastTimeMs = 0;
+const AIM_HOLD_INTERVAL_MS = 60;
+const AIM_HOLD_STEP_DEG = 5;
+
+function getAimAngleGameDegrees() {
+    // Converter do display (0=dir,90=cima) para o sistema do jogo (0=dir,90=baixo)
+    // game = 360 - display
+    let a = (360 - (aimAngleDisplayDegrees % 360)) % 360;
+    if (a < 0) a += 360;
+    return a;
+}
+
+function updateAimHoldRotation(currentTime) {
+    // currentTime vem do requestAnimationFrame (ms)
+    if (!currentTime && currentTime !== 0) return;
+
+    const upHeld = !!keys['ArrowUp'];
+    const downHeld = !!keys['ArrowDown'];
+
+    // Se ambos, não gira
+    if ((upHeld && downHeld) || (!upHeld && !downHeld)) {
+        aimHoldLastTimeMs = currentTime;
+        return;
+    }
+
+    if (!aimHoldLastTimeMs) aimHoldLastTimeMs = currentTime;
+
+    const elapsed = currentTime - aimHoldLastTimeMs;
+    if (elapsed < AIM_HOLD_INTERVAL_MS) return;
+
+    const steps = Math.floor(elapsed / AIM_HOLD_INTERVAL_MS);
+    aimHoldLastTimeMs += steps * AIM_HOLD_INTERVAL_MS;
+
+    let delta = 0;
+    if (upHeld) delta += AIM_HOLD_STEP_DEG * steps;
+    if (downHeld) delta -= AIM_HOLD_STEP_DEG * steps;
+
+    aimAngleDisplayDegrees = (aimAngleDisplayDegrees + delta) % 360;
+    if (aimAngleDisplayDegrees < 0) aimAngleDisplayDegrees += 360;
+}
+
 // Função para determinar direção do tiro baseado nas teclas
 function getShootDirection() {
     const baseSpeed = weapons[weaponType].speed;
-    
-    // === SISTEMA DE TIRO MULTI-DIRECIONAL AVANÇADO ===
-    
-    // Direções transversais para cima + lado direito com variação completa
-    if (keys['ArrowUp'] && keys['ArrowRight']) {
-        // Múltiplos ângulos para nordeste: 15°, 22.5°, 30°, 37.5°, 45°
-        const angles = [-15, -22.5, -30, -37.5, -45];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Direções transversais para cima + lado esquerdo com variação
-    if (keys['ArrowUp'] && keys['ArrowLeft']) {
-        // Múltiplos ângulos para noroeste: 135°, 142.5°, 150°, 157.5°, 165°
-        const angles = [-135, -142.5, -150, -157.5, -165];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Direções transversais para baixo + lado direito com variação
-    if (keys['ArrowDown'] && keys['ArrowRight']) {
-        // Múltiplos ângulos para sudeste: 15°, 22.5°, 30°, 37.5°, 45°
-        const angles = [15, 22.5, 30, 37.5, 45];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Direções transversais para baixo + lado esquerdo com variação
-    if (keys['ArrowDown'] && keys['ArrowLeft']) {
-        // Múltiplos ângulos para sudoeste: 135°, 142.5°, 150°, 157.5°, 165°
-        const angles = [135, 142.5, 150, 157.5, 165];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // === DIREÇÕES CARDEAIS COM VARIAÇÕES ===
-    
-    // Tiro para cima com pequenas variações
-    if (keys['ArrowUp']) {
-        const angles = [-90, -85, -95]; // Principalmente vertical com leve variação
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Tiro para baixo com pequenas variações
-    if (keys['ArrowDown']) {
-        const angles = [90, 85, 95]; // Principalmente vertical com leve variação
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Tiro para esquerda com variações
-    if (keys['ArrowLeft']) {
-        const angles = [180, 175, 185, 170, 190]; // Horizontal com variações
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // Tiro para direita com variações
-    if (keys['ArrowRight']) {
-        const angles = [0, -5, 5, -10, 10]; // Horizontal com variações
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
-    
-    // === DIREÇÃO PADRÃO COM VARIAÇÃO BASEADA NA DIREÇÃO ===
-    if (facingRight) {
-        // Tiro padrão para direita com leve variação
-        const angles = [0, -3, 3, -7, 7];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    } else {
-        // Tiro padrão para esquerda com leve variação
-        const angles = [180, 177, 183, 173, 187];
-        const chosenAngle = angles[Math.floor(Math.random() * angles.length)];
-        return { angle: chosenAngle, speed: baseSpeed };
-    }
+
+    // Mira 360° persistente
+    return {
+        angle: getAimAngleGameDegrees(),
+        speed: baseSpeed
+    };
 }
 
 // Criar bala com direção específica
@@ -961,9 +991,18 @@ function checkPlatformCollisions() {
 // Desenhar plataformas com efeitos cyberpunk
 function drawPlatforms() {
     const time = Date.now() * 0.005;
+
+    // Nível do chão (onde o personagem pisa)
+    const groundSurfaceY = CANVAS_HEIGHT - (frameHeight * scale) - 20;
     
     for (const platform of platforms) {
         const platformX = platform.x + backgroundX;
+
+        // Para os degraus/obstáculos (type=platform), desenhar até o chão
+        const visualY = platform.y;
+        const visualHeight = (platform.type === 'platform')
+            ? Math.max(platform.height, groundSurfaceY - platform.y)
+            : platform.height;
         
         // Só desenha se estiver visível na tela
         if (platformX + platform.width > -50 && platformX < CANVAS_WIDTH + 50) {
@@ -984,23 +1023,23 @@ function drawPlatforms() {
             
             // Corpo principal da plataforma
             ctx.fillStyle = baseColor;
-            ctx.fillRect(platformX, platform.y, platform.width, platform.height);
+            ctx.fillRect(platformX, visualY, platform.width, visualHeight);
             
             // Borda superior brilhante
             ctx.fillStyle = edgeColor;
-            ctx.fillRect(platformX, platform.y, platform.width, 3);
+            ctx.fillRect(platformX, visualY, platform.width, 3);
             
             // Linhas de energia piscantes
             for (let i = 0; i < platform.width; i += 30) {
                 const lineIntensity = Math.sin(time * 4 + i * 0.1) * 0.3 + 0.7;
                 ctx.fillStyle = `rgba(0, ${Math.floor(255 * lineIntensity)}, 100, ${lineIntensity})`;
-                ctx.fillRect(platformX + i + 2, platform.y + 2, 2, platform.height - 4);
+                ctx.fillRect(platformX + i + 2, visualY + 2, 2, Math.max(1, visualHeight - 4));
             }
             
             // Partículas de energia
             for (let i = 0; i < 3; i++) {
                 const particleX = platformX + (Math.sin(time * 2 + i) * platform.width * 0.3) + platform.width * 0.5;
-                const particleY = platform.y - 5 - (Math.abs(Math.sin(time * 3 + i)) * 8);
+                const particleY = visualY - 5 - (Math.abs(Math.sin(time * 3 + i)) * 8);
                 const particleSize = 2 + Math.sin(time * 4 + i) * 1;
                 
                 ctx.fillStyle = `rgba(0, 255, 0, ${glowIntensity})`;
@@ -1082,62 +1121,119 @@ function createEnemy(type = 'soldier') {
         soldier: {
             health: 30,
             damage: 15,
-            speed: 2,
+            speed: 2.1,
             color: '#ff4444',
             size: 20,
-            shootChance: 0.02
+            shootChance: 0.03,
+            usePlayerSprite: true,
+            tintPalette: ['#ff4444', '#44ff44', '#44aaff', '#ff44ff', '#ffaa00', '#00ffff']
         },
         robot: {
             health: 60,
             damage: 25,
-            speed: 1,
+            speed: 1.2,
             color: '#4444ff',
             size: 30,
-            shootChance: 0.01
+            shootChance: 0.015,
+            usePlayerSprite: true,
+            tintPalette: ['#66ccff', '#4444ff', '#00ffff', '#00ff99']
         },
         boss: {
-            health: 600,
-            damage: 35,
-            speed: 0.8,
+            // Chefão gigante
+            health: 1500,
+            damage: 45,
+            speed: 0.9,
             color: '#8B00FF',
-            size: 60,
-            shootChance: 0.03,
-            isBoss: true
+            size: 80,
+            shootChance: 0.06,
+            isBoss: true,
+            usePlayerSprite: true,
+            spriteScale: 2.4,
+            tintPalette: ['#8B00FF', '#ff00aa', '#aa00ff']
         }
     };
-    
-    // === FORMAS ALEATÓRIAS PARA INIMIGOS ===
+
+    const enemy = enemyTypes[type];
+
+    // Dimensões do sprite do inimigo (usar a mesma base da personagem)
+    const spriteScale = enemy.spriteScale || 1.0;
+    const enemyW = frameWidth * scale * spriteScale;
+    const enemyH = frameHeight * scale * spriteScale;
+
+    // Spawn: normalmente no chão, às vezes em plataformas elevadas (estilo Contra)
+    const groundSurfaceY = CANVAS_HEIGHT - (frameHeight * scale) - 20;
+
+    // Pegar uma plataforma aleatória (inclui chão) para spawn
+    // Boss sempre nasce no chão
+    const spawnOnPlatform = (type !== 'boss') && (Math.random() < 0.25);
+    let spawnY = groundSurfaceY - enemyH;
+
+    if (spawnOnPlatform) {
+        const elevated = platforms.filter(p => p.type === 'platform');
+        if (elevated.length > 0) {
+            const p = elevated[Math.floor(Math.random() * elevated.length)];
+            spawnY = p.y - enemyH;
+        }
+    }
+
+    // Cor/tinta do inimigo (misturados)
+    const palette = Array.isArray(enemy.tintPalette) ? enemy.tintPalette : ['#ff4444'];
+    const tintColor = palette[Math.floor(Math.random() * palette.length)];
+
+    // === FORMAS ALEATÓRIAS PARA INIMIGOS (mantido para compatibilidade, mas sprite tem prioridade) ===
     const shapes = ['square', 'circle', 'triangle'];
     const randomShape = shapes[Math.floor(Math.random() * shapes.length)];
-    
-    const enemy = enemyTypes[type];
+
     enemies.push({
-        x: CANVAS_WIDTH + 50,
-        y: Math.random() * (CANVAS_HEIGHT - 200) + 100,
+        x: CANVAS_WIDTH + 80 + Math.random() * 220,
+        y: spawnY,
         vx: -enemy.speed,
         vy: 0,
+        onGround: false,
         health: enemy.health,
         maxHealth: enemy.health,
         damage: enemy.damage,
         color: enemy.color,
         size: enemy.size,
+        w: enemyW,
+        h: enemyH,
         type: type,
+        isBoss: !!enemy.isBoss,
         shootChance: enemy.shootChance,
         shootCooldown: 0,
-        
+
+        // IA simples "autônoma" (andar / parar / mudar direção / pular)
+        ai: {
+            facingRight: false,
+            changeDirTimer: 40 + Math.floor(Math.random() * 140),
+            pauseTimer: 0,
+            jumpCooldown: 20 + Math.floor(Math.random() * 80)
+        },
+
+        // Animação do sprite
+        anim: {
+            frame: 1,
+            counter: 0,
+            speed: 8 + Math.floor(Math.random() * 6) // menor = mais rápido
+        },
+
+        // Render
+        renderMode: enemy.usePlayerSprite ? 'playerSprite' : 'shape',
+        tintColor: tintColor,
+
         // === NOVO: FORMA ALEATÓRIA ===
         shape: randomShape,
-        
+
         // === NOVO: SISTEMA DE ÁTOMOS ORBITANTES ===
         atomOrbs: {
-            count: type === 'robot' ? 4 : 3, // Robôs têm mais átomos
+            count: type === 'boss' ? 6 : (type === 'robot' ? 4 : 3),
             orbs: [],
-            rotationSpeed: type === 'robot' ? 0.03 : 0.05, // Robôs giram mais devagar
-            radius: type === 'robot' ? 45 : 35,
+            rotationSpeed: type === 'boss' ? 0.02 : (type === 'robot' ? 0.03 : 0.05),
+            radius: type === 'boss' ? 90 : (type === 'robot' ? 45 : 35),
             initialized: false
         }
     });
-    
+
     // Inicializar átomos orbitantes
     const newEnemy = enemies[enemies.length - 1];
     initializeEnemyAtoms(newEnemy);
@@ -1149,21 +1245,30 @@ function initializeEnemyAtoms(enemy) {
     
     for (let i = 0; i < enemy.atomOrbs.count; i++) {
         const angle = (i / enemy.atomOrbs.count) * Math.PI * 2;
+        
+        // Cores especiais para o chefão
+        let orbColors;
+        if (enemy.type === 'boss') {
+            // Chefão: cores roxas/magentas vibrantes
+            orbColors = ['#8B00FF', '#FF00FF', '#FF00AA', '#AA00FF', '#DA00FF', '#FF00DD'];
+        } else if (enemy.type === 'robot') {
+            orbColors = ['#00FFFF', '#0080FF', '#4040FF'];
+        } else {
+            orbColors = ['#FF4040', '#FF8040', '#FFFF40'];
+        }
+        
         const orb = {
             angle: angle,
             initialAngle: angle,
             radius: enemy.atomOrbs.radius,
-            size: Math.random() * 3 + 2, // Tamanho variado
-            speed: enemy.atomOrbs.rotationSpeed + (Math.random() * 0.02 - 0.01), // Velocidade variada
-            color: enemy.type === 'robot' ? 
-                ['#00FFFF', '#0080FF', '#4040FF'][i % 3] : 
-                ['#FF4040', '#FF8040', '#FFFF40'][i % 3],
-            pulse: Math.random() * Math.PI * 2, // Para efeito pulsante
+            size: enemy.type === 'boss' ? (Math.random() * 4 + 4) : (Math.random() * 3 + 2), // Chefão tem átomos maiores
+            speed: enemy.atomOrbs.rotationSpeed + (Math.random() * 0.02 - 0.01),
+            color: orbColors[i % orbColors.length],
+            pulse: Math.random() * Math.PI * 2,
             orbit: {
-                // Órbitas variadas para efeito mais realista
-                radiusVariation: Math.random() * 10 + 5,
-                tiltAngle: Math.random() * Math.PI * 0.3, // Inclinação da órbita
-                eccentricity: Math.random() * 0.3 // Excentricidade da órbita
+                radiusVariation: enemy.type === 'boss' ? (Math.random() * 15 + 10) : (Math.random() * 10 + 5),
+                tiltAngle: Math.random() * Math.PI * 0.3,
+                eccentricity: enemy.type === 'boss' ? (Math.random() * 0.4) : (Math.random() * 0.3)
             }
         };
         enemy.atomOrbs.orbs.push(orb);
@@ -1233,29 +1338,136 @@ function updateBullets() {
     }
 }
 
+// Verificar colisão do inimigo com plataformas/chão (física simples)
+function checkEnemyPlatformCollisions(enemy) {
+    const w = enemy.w || enemy.size;
+    const h = enemy.h || enemy.size;
+
+    const enemyRect = {
+        x: enemy.x,
+        y: enemy.y,
+        width: w,
+        height: h
+    };
+
+    enemy.onGround = false;
+
+    // Colisão com plataformas (incluindo chão)
+    for (const platform of platforms) {
+        const platformX = platform.x + backgroundX;
+
+        if (enemyRect.x + enemyRect.width > platformX &&
+            enemyRect.x < platformX + platform.width) {
+
+            if (enemyRect.y + enemyRect.height > platform.y &&
+                enemyRect.y + enemyRect.height < platform.y + platform.height + 10 &&
+                enemy.vy >= 0) {
+
+                enemy.y = platform.y - enemyRect.height;
+                enemy.vy = 0;
+                enemy.onGround = true;
+            }
+        }
+    }
+
+    // Colisão com o chão (fallback)
+    const groundSurfaceY = CANVAS_HEIGHT - (frameHeight * scale) - 20;
+    if (enemy.y + enemyRect.height >= groundSurfaceY) {
+        enemy.y = groundSurfaceY - enemyRect.height;
+        enemy.vy = 0;
+        enemy.onGround = true;
+    }
+}
+
 // Atualizar inimigos
 function updateEnemies() {
     const time = Date.now() * 0.001;
-    
+
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
-        enemy.x += enemy.vx;
-        enemy.y += enemy.vy;
-        
+
         // === ATUALIZAR ÁTOMOS ORBITANTES ===
         updateEnemyAtoms(enemy, time);
-        
-        // IA básica do inimigo
-        if (enemy.shootCooldown > 0) enemy.shootCooldown--;
-        
-        // Inimigo atira ocasionalmente
-        if (Math.random() < enemy.shootChance && enemy.shootCooldown === 0) {
-            createEnemyBullet(enemy.x, enemy.y + enemy.size/2, -5, 0);
-            enemy.shootCooldown = 60;
+
+        // === IA AUTÔNOMA ===
+        if (!enemy.ai) enemy.ai = { facingRight: false, changeDirTimer: 90, pauseTimer: 0, jumpCooldown: 60 };
+        if (!enemy.anim) enemy.anim = { frame: 1, counter: 0, speed: 10 };
+
+        // Pequena chance de "pausar" (parar e atirar)
+        if (enemy.ai.pauseTimer > 0) {
+            enemy.ai.pauseTimer--;
+            enemy.vx = 0;
+        } else {
+            // Trocar direção às vezes
+            enemy.ai.changeDirTimer--;
+            if (enemy.ai.changeDirTimer <= 0) {
+                enemy.ai.changeDirTimer = 40 + Math.floor(Math.random() * 160);
+
+                // 80%: continuar indo para a esquerda (como Contra), 20%: inverter
+                const invert = Math.random() < 0.20;
+                enemy.ai.facingRight = invert ? !enemy.ai.facingRight : false;
+
+                enemy.ai.pauseTimer = Math.random() < 0.25 ? (15 + Math.floor(Math.random() * 35)) : 0;
+            }
+
+            const dir = enemy.ai.facingRight ? 1 : -1;
+            const baseSpeed = (enemy.type === 'boss') ? 0.9 : (enemy.type === 'robot' ? 1.2 : 2.1);
+            enemy.vx = dir * baseSpeed;
         }
-        
-        // Remove inimigo se saiu da tela
-        if (enemy.x < -50) {
+
+        // Pulo aleatório (estilo run-and-gun)
+        if (enemy.ai.jumpCooldown > 0) enemy.ai.jumpCooldown--;
+        if (enemy.onGround && enemy.ai.jumpCooldown === 0 && Math.random() < 0.10) {
+            enemy.vy = -9.5 - Math.random() * 2.5;
+            enemy.onGround = false;
+            enemy.ai.jumpCooldown = 45 + Math.floor(Math.random() * 120);
+        }
+
+        // Gravidade
+        enemy.vy += gravity;
+
+        // Movimento
+        enemy.x += enemy.vx;
+        enemy.y += enemy.vy;
+
+        // Colisões com plataformas/chão
+        checkEnemyPlatformCollisions(enemy);
+
+        // Animação do sprite (usar frames 1..5, row 0)
+        enemy.anim.counter++;
+        if (enemy.anim.counter >= enemy.anim.speed) {
+            enemy.anim.counter = 0;
+            enemy.anim.frame++;
+            if (enemy.anim.frame > 5) enemy.anim.frame = 1;
+        }
+
+        // Cooldown de tiro
+        if (enemy.shootCooldown > 0) enemy.shootCooldown--;
+
+        // Inimigo atira ocasionalmente (direção depende de para onde ele está virado)
+        if (enemy.shootCooldown === 0 && Math.random() < enemy.shootChance) {
+            const bulletDir = enemy.ai.facingRight ? 1 : -1;
+            const w = enemy.w || enemy.size;
+            const h = enemy.h || enemy.size;
+            const isBoss = enemy.isBoss;
+            const bulletSize = isBoss ? 6 : 3;
+            const bulletDamage = isBoss ? 35 : 20;
+            const bulletSpeed = isBoss ? 6 : 5;
+
+            createEnemyBullet(
+                enemy.x + w / 2,
+                enemy.y + h * 0.45,
+                bulletDir * bulletSpeed,
+                0,
+                enemy.tintColor || '#ff4444',
+                bulletSize,
+                bulletDamage
+            );
+            enemy.shootCooldown = (isBoss ? 35 : 55) + Math.floor(Math.random() * 35);
+        }
+
+        // Remove inimigo se saiu muito da tela
+        if (enemy.x < -300 || enemy.x > CANVAS_WIDTH + 400) {
             enemies.splice(i, 1);
         }
     }
@@ -1265,8 +1477,10 @@ function updateEnemies() {
 function updateEnemyAtoms(enemy, time) {
     if (!enemy.atomOrbs.initialized) return;
     
-    const centerX = enemy.x + enemy.size / 2;
-    const centerY = enemy.y + enemy.size / 2;
+    const w = enemy.w || enemy.size;
+    const h = enemy.h || enemy.size;
+    const centerX = enemy.x + w / 2;
+    const centerY = enemy.y + h / 2;
     
     // Atualizar cada átomo orbitante
     for (let orb of enemy.atomOrbs.orbs) {
@@ -1297,16 +1511,16 @@ function updateEnemyAtoms(enemy, time) {
 }
 
 // Criar bala inimiga
-function createEnemyBullet(x, y, vx, vy) {
+function createEnemyBullet(x, y, vx, vy, color = '#ff4444', size = 3, damage = 20) {
     bullets.push({
         x: x,
         y: y,
         vx: vx,
         vy: vy,
-        damage: 20,
-        color: '#ff4444',
+        damage: damage,
+        color: color,
         type: 'enemy',
-        size: 3,
+        size: size,
         life: 120
     });
 }
@@ -1739,6 +1953,141 @@ function drawShootingUpEffect() {
     ctx.restore();
 }
 
+// === INDICADOR DE ÂNGULO DE TIRO (SETA + NÚMEROS) ===
+function normalizeAngle(angle) {
+    let a = angle % 360;
+    if (a < 0) a += 360;
+    return a;
+}
+
+// Converter do sistema do jogo (0=dir, 90=baixo) para exibição tipo transferidor (0=dir, 90=cima)
+function toDisplayAngle(gameAngle) {
+    const a = normalizeAngle(gameAngle);
+    return normalizeAngle(360 - a);
+}
+
+// Ângulo atual de mira (sem aleatoriedade, para UI)
+function getAimAnglePreview() {
+    // Multi: não existe um único ângulo
+    if (currentShootType === 'multi') return null;
+
+    // Sempre refletir a mira 360° persistente
+    return getAimAngleGameDegrees();
+}
+
+function drawAimIndicator() {
+    // Mostrar apenas quando estiver com arma
+    if (!hasWeapon || weaponType === 'none') return;
+
+    const aimAngle = getAimAnglePreview();
+
+    // Posição: em volta do personagem (centro do corpo)
+    const playerCenterX = posX + (frameWidth * scale) / 2;
+    const playerCenterY = posY + (frameHeight * scale) / 2;
+
+    const cx = playerCenterX;
+    const cy = Math.max(85, Math.min(CANVAS_HEIGHT - 85, playerCenterY));
+
+    const textRadius = 82 * aimIndicatorScale;
+    const arrowLen = 58 * aimIndicatorScale;
+
+    ctx.save();
+
+    // Transparência geral (quase invisível)
+    ctx.globalAlpha = aimIndicatorOpacity;
+
+    // Fundo leve para contraste (sem desenhar o transferidor)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, textRadius + 18 * aimIndicatorScale, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Estilo
+    ctx.font = `${Math.round(14 * aimIndicatorScale)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#FFD700';
+
+    // Números (como transferidor) - apenas os números
+    // 0° à direita, 90° acima, 180° esquerda, 270° abaixo
+    for (let deg = 0; deg < 360; deg += 10) {
+        // Para não poluir demais, desenhar "forte" a cada 30° e "leve" nos outros
+        const isMajor = (deg % 30 === 0);
+
+        // Números um pouco menos transparentes (pedido do usuário)
+        const majorAlpha = Math.min(1, aimIndicatorOpacity * 1.60);
+        const minorAlpha = Math.min(1, aimIndicatorOpacity * 1.00);
+        ctx.globalAlpha = isMajor ? majorAlpha : minorAlpha;
+
+        const rad = (deg * Math.PI) / 180;
+        const x = cx + Math.cos(rad) * textRadius;
+        const y = cy - Math.sin(rad) * textRadius;
+
+        // contorno preto para legibilidade
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.strokeText(String(deg), x, y);
+        ctx.fillText(String(deg), x, y);
+    }
+
+    ctx.globalAlpha = aimIndicatorOpacity;
+
+    // Centro: mostrar tipo/ângulo
+    ctx.font = `${Math.round(15 * aimIndicatorScale)}px Arial`;
+    if (aimAngle === null) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.lineWidth = 4;
+        ctx.strokeText('MULTI', cx, cy);
+        ctx.fillText('MULTI', cx, cy);
+        ctx.restore();
+        return;
+    }
+
+    const displayAngle = toDisplayAngle(aimAngle);
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 4;
+    ctx.strokeText(`${Math.round(displayAngle)}°`, cx, cy);
+    ctx.fillText(`${Math.round(displayAngle)}°`, cx, cy);
+
+    // Seta amarela indicando o ângulo
+    const aRad = (displayAngle * Math.PI) / 180;
+    const dx = Math.cos(aRad);
+    const dy = -Math.sin(aRad);
+
+    const tipX = cx + dx * arrowLen;
+    const tipY = cy + dy * arrowLen;
+
+    // seta um pouco mais visível que os números
+    ctx.globalAlpha = Math.min(1, aimIndicatorOpacity * 1.9);
+    ctx.strokeStyle = '#FFD700';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+
+    // Cabeça da seta
+    ctx.fillStyle = '#FFD700';
+    const headLen = 12 * aimIndicatorScale;
+    const headWidth = 8 * aimIndicatorScale;
+    const perpX = -dy;
+    const perpY = dx;
+
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - dx * headLen + perpX * headWidth, tipY - dy * headLen + perpY * headWidth);
+    ctx.lineTo(tipX - dx * headLen - perpX * headWidth, tipY - dy * headLen - perpY * headWidth);
+    ctx.closePath();
+    ctx.fill();
+
+    // Pontinho no topo
+    ctx.beginPath();
+    ctx.arc(tipX, tipY, 4 * aimIndicatorScale, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
 // Função para atualizar o estado da animação
 function updateAnimationState() {
     // Atualiza se tem arma equipada
@@ -1782,9 +2131,11 @@ function checkCollisions() {
         if (bullet.type !== 'enemy') {
             for (let j = enemies.length - 1; j >= 0; j--) {
                 const enemy = enemies[j];
-                if (bullet.x < enemy.x + enemy.size &&
+                const ew = enemy.w || enemy.size;
+                const eh = enemy.h || enemy.size;
+                if (bullet.x < enemy.x + ew &&
                     bullet.x + bullet.size > enemy.x &&
-                    bullet.y < enemy.y + enemy.size &&
+                    bullet.y < enemy.y + eh &&
                     bullet.y + bullet.size > enemy.y) {
                     
         // Inimigo levou dano
@@ -1796,7 +2147,9 @@ function checkCollisions() {
                     
                     if (enemy.health <= 0) {
                         // Inimigo morreu
-                        createExplosion(enemy.x + enemy.size/2, enemy.y + enemy.size/2);
+                        const ex = enemy.x + (enemy.w || enemy.size) / 2;
+                        const ey = enemy.y + (enemy.h || enemy.size) / 2;
+                        createExplosion(ex, ey, enemy.isBoss ? 70 : 30);
                         gameState.score += enemy.type === 'robot' ? 200 : (enemy.isBoss ? 1000 : 100);
                         
                         // Som de destruição do inimigo
@@ -1822,11 +2175,14 @@ function checkCollisions() {
                         
                         enemies.splice(j, 1);
 
-                        // A cada 10 inimigos derrotados, spawnar chefão e pedir nova "tela" à IA
-                        if (gameState.enemiesDefeated > 0 && gameState.enemiesDefeated % 10 === 0) {
-                            queueBossSpawn();
-                            requestGeminiScreenUpdate();
-                        }
+        // A cada 30 inimigos derrotados, spawnar chefão gigante e pedir nova "tela" à IA
+        if (gameState.enemiesDefeated > 0 && gameState.enemiesDefeated % 30 === 0) {
+            const bossAlive = enemies.some(e => e.isBoss);
+            if (!bossQueued && !bossAlive) {
+                queueBossSpawn();
+                requestGeminiScreenUpdate();
+            }
+        }
                     }
                     break;
                 }
@@ -2015,105 +2371,248 @@ function drawBullets() {
 // Desenhar inimigos com efeitos cyberpunk
 function drawEnemies() {
     const time = Date.now() * 0.008;
-    
+
     for (const enemy of enemies) {
         // === DESENHAR ÁTOMOS ORBITANTES PRIMEIRO (ATRÁS DO INIMIGO) ===
         drawEnemyAtoms(enemy);
-        
+
+        const w = enemy.w || enemy.size;
+        const h = enemy.h || enemy.size;
+
         // Efeito cyberpunk piscante para os inimigos
         const glowIntensity = Math.sin(time * 2 + enemy.x * 0.01) * 0.3 + 0.7;
         const pulseIntensity = Math.sin(time * 4 + enemy.y * 0.01) * 0.2 + 0.8;
-        
-        ctx.save();
-        
-        // Sombra/glow cyberpunk nos inimigos
-        ctx.shadowColor = enemy.type === 'robot' ? `rgba(0, 0, 255, ${glowIntensity})` : `rgba(255, 0, 0, ${glowIntensity})`;
-        ctx.shadowBlur = 8 * glowIntensity;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-        
-        // Corpo do inimigo com efeito piscante
-        const baseAlpha = pulseIntensity;
-        if (enemy.type === 'robot') {
-            ctx.fillStyle = `rgba(0, 0, ${Math.floor(255 * glowIntensity)}, ${baseAlpha})`;
-        } else {
-            ctx.fillStyle = `rgba(${Math.floor(255 * glowIntensity)}, 0, 0, ${baseAlpha})`;
-        }
-        
-        // === DESENHAR BASEADO NA FORMA ALEATÓRIA ===
-        const centerX = enemy.x + enemy.size / 2;
-        const centerY = enemy.y + enemy.size / 2;
-        
-        if (enemy.shape === 'circle') {
-            // Círculo
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, enemy.size / 2, 0, Math.PI * 2);
-            ctx.fill();
-        } else if (enemy.shape === 'triangle') {
-            // Triângulo
-            ctx.beginPath();
-            ctx.moveTo(centerX, enemy.y); // Topo
-            ctx.lineTo(enemy.x, enemy.y + enemy.size); // Inferior esquerdo
-            ctx.lineTo(enemy.x + enemy.size, enemy.y + enemy.size); // Inferior direito
-            ctx.closePath();
-            ctx.fill();
-        } else {
-            // Quadrado (padrão)
-            ctx.fillRect(enemy.x, enemy.y, enemy.size, enemy.size);
-        }
-        
-        // Linhas de energia nos inimigos
-        for (let i = 0; i < enemy.size; i += 8) {
-            const lineIntensity = Math.sin(time * 3 + i * 0.2) * 0.4 + 0.6;
-            if (enemy.type === 'robot') {
-                ctx.fillStyle = `rgba(0, 100, ${Math.floor(255 * lineIntensity)}, ${lineIntensity})`;
+
+        // === NOVO: inimigos usando o mesmo spritesheet da personagem principal ===
+        if (enemy.renderMode === 'playerSprite' && playerImages.spritesheet && playerImages.spritesheet.complete) {
+            ctx.save();
+
+            // Configurar brilho baseado no tipo de inimigo
+            if (enemy.isBoss) {
+                // Brilho ROXO FORTE e PULSANTE para o chefão
+                const bossGlow = Math.sin(time * 3) * 0.4 + 0.7;
+                ctx.shadowColor = `rgba(139, 0, 255, ${bossGlow})`; // Roxo vibrante
+                ctx.shadowBlur = 25 * bossGlow; // Brilho mais intenso
+            } else if (enemy.type === 'robot') {
+                // Brilho azul para robôs
+                ctx.shadowColor = `rgba(0, 150, 255, ${glowIntensity})`;
+                ctx.shadowBlur = 10 * glowIntensity;
             } else {
-                ctx.fillStyle = `rgba(${Math.floor(255 * lineIntensity)}, 100, 0, ${lineIntensity})`;
+                // Brilho vermelho para soldados
+                ctx.shadowColor = `rgba(255, 0, 0, ${glowIntensity})`;
+                ctx.shadowBlur = 10 * glowIntensity;
             }
-            ctx.fillRect(enemy.x + i, enemy.y + 2, 2, enemy.size - 4);
+
+            // Usar frames 1..5 na row 0 (caminhada com arma) como animação
+            const frame = enemy.anim?.frame ?? 1;
+            const sx = frame * frameWidth;
+            const sy = 0 * frameHeight;
+
+            const facingRight = !!enemy.ai?.facingRight;
+
+            // === DESENHAR AURA DO CHEFÃO (ANTES DO SPRITE) ===
+            if (enemy.isBoss) {
+                const auraPulse = Math.sin(time * 4) * 0.3 + 0.7;
+                const auraSize = 15 * auraPulse;
+                
+                // Aura roxa externa
+                ctx.fillStyle = `rgba(139, 0, 255, ${0.15 * auraPulse})`;
+                ctx.fillRect(enemy.x - auraSize, enemy.y - auraSize, w + auraSize * 2, h + auraSize * 2);
+                
+                // Aura roxa interna (mais forte)
+                ctx.fillStyle = `rgba(139, 0, 255, ${0.25 * auraPulse})`;
+                ctx.fillRect(enemy.x - auraSize/2, enemy.y - auraSize/2, w + auraSize, h + auraSize);
+            }
+
+            if (!facingRight) {
+                // Espelhar para a esquerda
+                ctx.scale(-1, 1);
+                ctx.drawImage(
+                    playerImages.spritesheet,
+                    sx, sy, frameWidth, frameHeight,
+                    -(enemy.x + w), enemy.y,
+                    w, h
+                );
+            } else {
+                ctx.drawImage(
+                    playerImages.spritesheet,
+                    sx, sy, frameWidth, frameHeight,
+                    enemy.x, enemy.y,
+                    w, h
+                );
+            }
+
+            // Tinta colorida por tipo - MAIS INTENSA para o chefão
+            if (enemy.isBoss) {
+                // Chefão: tinta ROXA MUITO MAIS FORTE e VIBRANTE
+                ctx.globalAlpha = 0.55; // Muito mais opaco (era 0.18)
+                const bossTintPulse = Math.sin(time * 5) * 0.15 + 0.55;
+                ctx.globalCompositeOperation = 'multiply'; // Efeito de multiplicação para cor mais intensa
+                ctx.fillStyle = enemy.tintColor || '#8B00FF';
+                ctx.fillRect(enemy.x, enemy.y, w, h);
+                
+                // Segunda camada de cor para intensificar ainda mais
+                ctx.globalCompositeOperation = 'screen'; // Efeito de tela para brilho
+                ctx.globalAlpha = bossTintPulse * 0.4;
+                ctx.fillStyle = '#FF00FF'; // Magenta brilhante
+                ctx.fillRect(enemy.x, enemy.y, w, h);
+                
+                ctx.globalCompositeOperation = 'source-over'; // Restaurar modo normal
+            } else {
+                // Inimigos normais: tinta leve
+                ctx.globalAlpha = 0.13;
+                ctx.fillStyle = enemy.tintColor || '#FF0000';
+                ctx.fillRect(enemy.x, enemy.y, w, h);
+            }
+
+            // === DESENHAR COROA/INDICADOR DE CHEFÃO ===
+            if (enemy.isBoss) {
+                ctx.globalAlpha = 1.0;
+                const crownY = enemy.y - 15;
+                const crownX = enemy.x + w / 2;
+                
+                // Estrela dourada acima do chefão
+                ctx.fillStyle = '#FFD700';
+                ctx.shadowColor = '#FFD700';
+                ctx.shadowBlur = 15;
+                
+                // Desenhar estrela de 5 pontas
+                ctx.beginPath();
+                for (let i = 0; i < 5; i++) {
+                    const angle = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+                    const x = crownX + Math.cos(angle) * 8;
+                    const y = crownY + Math.sin(angle) * 8;
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                }
+                ctx.closePath();
+                ctx.fill();
+                
+                // Texto "BOSS" acima da estrela
+                ctx.font = 'bold 12px Arial';
+                ctx.fillStyle = '#FFD700';
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 3;
+                ctx.textAlign = 'center';
+                ctx.strokeText('BOSS', crownX, crownY - 15);
+                ctx.fillText('BOSS', crownX, crownY - 15);
+            }
+
+            ctx.restore();
+        } else {
+            // === fallback antigo: formas geométricas ===
+            ctx.save();
+
+            // Sombra/glow cyberpunk nos inimigos
+            ctx.shadowColor = enemy.type === 'robot' ? `rgba(0, 0, 255, ${glowIntensity})` : `rgba(255, 0, 0, ${glowIntensity})`;
+            ctx.shadowBlur = 8 * glowIntensity;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+
+            // Corpo do inimigo com efeito piscante
+            const baseAlpha = pulseIntensity;
+            if (enemy.type === 'robot') {
+                ctx.fillStyle = `rgba(0, 0, ${Math.floor(255 * glowIntensity)}, ${baseAlpha})`;
+            } else {
+                ctx.fillStyle = `rgba(${Math.floor(255 * glowIntensity)}, 0, 0, ${baseAlpha})`;
+            }
+
+            // === DESENHAR BASEADO NA FORMA ALEATÓRIA ===
+            const centerX = enemy.x + enemy.size / 2;
+            const centerY = enemy.y + enemy.size / 2;
+
+            if (enemy.shape === 'circle') {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, enemy.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (enemy.shape === 'triangle') {
+                ctx.beginPath();
+                ctx.moveTo(centerX, enemy.y);
+                ctx.lineTo(enemy.x, enemy.y + enemy.size);
+                ctx.lineTo(enemy.x + enemy.size, enemy.y + enemy.size);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.fillRect(enemy.x, enemy.y, enemy.size, enemy.size);
+            }
+
+            // Linhas de energia
+            for (let i = 0; i < enemy.size; i += 8) {
+                const lineIntensity = Math.sin(time * 3 + i * 0.2) * 0.4 + 0.6;
+                if (enemy.type === 'robot') {
+                    ctx.fillStyle = `rgba(0, 100, ${Math.floor(255 * lineIntensity)}, ${lineIntensity})`;
+                } else {
+                    ctx.fillStyle = `rgba(${Math.floor(255 * lineIntensity)}, 100, 0, ${lineIntensity})`;
+                }
+                ctx.fillRect(enemy.x + i, enemy.y + 2, 2, enemy.size - 4);
+            }
+
+            ctx.restore();
         }
-        
-        ctx.restore();
-        
-        // Barra de vida do inimigo com efeito cyberpunk
+
+        // Barra de vida do inimigo - ESPECIAL PARA CHEFÃO
         const healthPercent = enemy.health / enemy.maxHealth;
         
-        // Fundo da barra de vida
-        ctx.fillStyle = 'rgba(100, 0, 0, 0.8)';
-        ctx.fillRect(enemy.x - 2, enemy.y - 10, enemy.size + 4, 6);
-        
-        // Barra de vida com efeito piscante verde
-        const healthGlow = Math.sin(time * 5) * 0.3 + 0.7;
-        ctx.fillStyle = `rgba(0, ${Math.floor(255 * healthGlow)}, 0, ${healthGlow})`;
-        ctx.fillRect(enemy.x, enemy.y - 8, (enemy.size * healthPercent), 4);
-        
-        // Olhos cyberpunk piscantes
-        const eyeGlow = Math.sin(time * 6 + enemy.x * 0.02) * 0.4 + 0.6;
-        if (enemy.type === 'robot') {
-            ctx.fillStyle = `rgba(0, 255, 255, ${eyeGlow})`;
-        } else {
-            ctx.fillStyle = `rgba(255, 255, 0, ${eyeGlow})`;
-        }
-        ctx.fillRect(enemy.x + 3, enemy.y + 3, 4, 4);
-        ctx.fillRect(enemy.x + enemy.size - 7, enemy.y + 3, 4, 4);
-        
-        // Partículas de energia flutuando ao redor dos inimigos
-        for (let i = 0; i < 2; i++) {
-            const particleX = enemy.x + enemy.size/2 + Math.sin(time * 2 + i) * (enemy.size * 0.6);
-            const particleY = enemy.y + enemy.size/2 + Math.cos(time * 2.5 + i) * (enemy.size * 0.4);
-            const particleSize = 1 + Math.sin(time * 3 + i) * 0.5;
+        if (enemy.isBoss) {
+            // === BARRA DE VIDA ESPECIAL DO CHEFÃO ===
+            const barHeight = 10; // Mais alta
+            const barY = enemy.y - 20; // Mais afastada
             
+            // Fundo da barra (preto sólido)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+            ctx.fillRect(enemy.x - 4, barY, w + 8, barHeight + 4);
+            
+            // Borda da barra (dourada)
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(enemy.x - 4, barY, w + 8, barHeight + 4);
+            
+            // Fundo vermelho da barra
+            ctx.fillStyle = 'rgba(150, 0, 0, 0.9)';
+            ctx.fillRect(enemy.x - 2, barY + 2, w + 4, barHeight);
+            
+            // Barra de vida principal (gradiente roxo/magenta)
+            const healthGlow = Math.sin(time * 5) * 0.3 + 0.7;
+            const gradient = ctx.createLinearGradient(enemy.x, barY, enemy.x + (w * healthPercent), barY);
+            gradient.addColorStop(0, `rgba(139, 0, 255, ${healthGlow})`);
+            gradient.addColorStop(0.5, `rgba(255, 0, 255, ${healthGlow})`);
+            gradient.addColorStop(1, `rgba(255, 0, 150, ${healthGlow})`);
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(enemy.x, barY + 2, (w * healthPercent), barHeight);
+            
+            // Texto com porcentagem de vida
             ctx.save();
-            ctx.globalAlpha = glowIntensity * 0.8;
-            if (enemy.type === 'robot') {
-                ctx.fillStyle = '#00FFFF';
-            } else {
-                ctx.fillStyle = '#FFFF00';
-            }
-            ctx.beginPath();
-            ctx.arc(particleX, particleY, particleSize, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.font = 'bold 10px Arial';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 3;
+            ctx.textAlign = 'center';
+            const healthText = `${Math.ceil(healthPercent * 100)}%`;
+            ctx.strokeText(healthText, enemy.x + w/2, barY + barHeight - 1);
+            ctx.fillText(healthText, enemy.x + w/2, barY + barHeight - 1);
             ctx.restore();
+            
+            // Efeito de brilho pulsante
+            ctx.save();
+            ctx.globalAlpha = 0.4 * healthGlow;
+            ctx.shadowColor = '#FF00FF';
+            ctx.shadowBlur = 15;
+            ctx.strokeStyle = '#FF00FF';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(enemy.x - 2, barY + 2, (w * healthPercent) + 4, barHeight);
+            ctx.restore();
+        } else {
+            // === BARRA DE VIDA NORMAL PARA INIMIGOS COMUNS ===
+            ctx.fillStyle = 'rgba(100, 0, 0, 0.8)';
+            ctx.fillRect(enemy.x - 2, enemy.y - 10, w + 4, 6);
+
+            const healthGlow = Math.sin(time * 5) * 0.3 + 0.7;
+            ctx.fillStyle = `rgba(0, ${Math.floor(255 * healthGlow)}, 0, ${healthGlow})`;
+            ctx.fillRect(enemy.x, enemy.y - 8, (w * healthPercent), 4);
         }
     }
 }
@@ -2127,13 +2626,14 @@ function drawEnemyAtoms(enemy) {
     ctx.save();
     
     for (let orb of enemy.atomOrbs.orbs) {
-        // Configurar estilo do átomo
-        ctx.globalAlpha = orb.alpha;
+        // Configurar estilo do átomo - MAIS VISIVEL PARA CHEFÃO
+        const alphaMultiplier = enemy.isBoss ? 1.5 : 1.0;
+        ctx.globalAlpha = orb.alpha * alphaMultiplier;
         ctx.fillStyle = orb.color;
         
-        // Efeito glow nos átomos
+        // Efeito glow nos átomos - MAIS FORTE PARA CHEFÃO
         ctx.shadowColor = orb.color;
-        ctx.shadowBlur = 8;
+        ctx.shadowBlur = enemy.isBoss ? 20 : 8;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
         
@@ -2142,22 +2642,34 @@ function drawEnemyAtoms(enemy) {
         ctx.arc(orb.x, orb.y, orb.currentSize, 0, Math.PI * 2);
         ctx.fill();
         
-        // Núcleo do átomo (mais brilhante)
-        ctx.globalAlpha = orb.alpha * 1.5;
+        // Núcleo do átomo (mais brilhante) - AINDA MAIS BRILHANTE PARA CHEFÃO
+        ctx.globalAlpha = orb.alpha * (enemy.isBoss ? 2.0 : 1.5);
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
-        ctx.arc(orb.x, orb.y, orb.currentSize * 0.3, 0, Math.PI * 2);
+        ctx.arc(orb.x, orb.y, orb.currentSize * 0.4, 0, Math.PI * 2);
         ctx.fill();
+        
+        // Anel externo para chefão
+        if (enemy.isBoss) {
+            ctx.globalAlpha = orb.alpha * 0.8;
+            ctx.strokeStyle = orb.color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(orb.x, orb.y, orb.currentSize + 2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
         
         // Trilha da órbita (linha semi-transparente)
         if (orb === enemy.atomOrbs.orbs[0]) { // Só desenha uma trilha por inimigo
-            ctx.globalAlpha = 0.1;
-            ctx.strokeStyle = enemy.type === 'robot' ? '#00FFFF' : '#FF4040';
-            ctx.lineWidth = 1;
+            ctx.globalAlpha = enemy.isBoss ? 0.25 : 0.1; // Trilha mais visível para chefão
+            ctx.strokeStyle = enemy.isBoss ? '#8B00FF' : (enemy.type === 'robot' ? '#00FFFF' : '#FF4040');
+            ctx.lineWidth = enemy.isBoss ? 2 : 1;
             ctx.beginPath();
             
-            const centerX = enemy.x + enemy.size / 2;
-            const centerY = enemy.y + enemy.size / 2;
+            const w = enemy.w || enemy.size;
+            const h = enemy.h || enemy.size;
+            const centerX = enemy.x + w / 2;
+            const centerY = enemy.y + h / 2;
             
             // Desenhar órbita elíptica
             for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
@@ -3135,7 +3647,7 @@ function drawControlsPanel() {
     ctx.fillStyle = '#FFD700';
     ctx.font = 'bold 14px Arial';
     ctx.textAlign = 'left';
-    ctx.fillText('🎮 CONTROLES ESPECIAIS DA JULIETTE:', 10, panelY + 15);
+    ctx.fillText('🎮 CONTROLES / DICAS:', 10, panelY + 15);
     
     // Calcular larguras das colunas baseado na largura da tela
     const numCols = CANVAS_WIDTH > 1361 ? 4 : (CANVAS_WIDTH > 646 ? 3 : 2);
@@ -3152,7 +3664,8 @@ function drawControlsPanel() {
     ctx.fillStyle = 'white';
     ctx.fillText('⬅️➡️ Mover | Z: Pular', 10, startY + lineHeight);
     ctx.fillText('X/SPACE: Atirar | M: Som', 10, startY + lineHeight * 2);
-    ctx.fillText('⬆️+X: ⬇️+X: ↗️+X: ↙️+X', 10, startY + lineHeight * 3);
+    ctx.fillText('⬆️/⬇️: Mira 360° (toque/segure) | [: -5° | ]: +5°', 10, startY + lineHeight * 3);
+    ctx.fillText('👾 Inimigos: autônomos/aleatórios (estilo Contra)', 10, startY + lineHeight * 4);
     
     // Coluna 2 - Ataques especiais
     ctx.fillStyle = '#FF6B6B';
@@ -3171,7 +3684,7 @@ function drawControlsPanel() {
         ctx.fillStyle = 'white';
         ctx.fillText('H: Ocultar/Mostrar Painel', colWidth * 2 + 10, startY + lineHeight);
         ctx.fillText('P: Pausar | F11: Tela Cheia', colWidth * 2 + 10, startY + lineHeight * 2);
-        ctx.fillText('R: Reiniciar (Game Over)', colWidth * 2 + 10, startY + lineHeight * 3);
+        ctx.fillText('R: Reiniciar (Game Over) | T: Multi', colWidth * 2 + 10, startY + lineHeight * 3);
     }
     
     // Coluna 4 - Cheats (se houver espaço)
@@ -3209,33 +3722,62 @@ function drawControlsPanel() {
 
 // Sistema de spawn de inimigos
 let enemySpawnTimer = 0;
-const MAX_ENEMIES = 10; // Máximo de inimigos simultâneos na tela
+
+// Limites para não travar o jogo
+// (desktop aguenta mais, mobile menos)
+const MAX_ENEMIES_DESKTOP = 14;
+const MAX_ENEMIES_MOBILE = 10;
+const MAX_ENEMIES_FORWARD_BONUS_DESKTOP = 4; // extra quando o jogador está andando pra frente
+const MAX_ENEMIES_FORWARD_BONUS_MOBILE = 2;
+
 let bossQueued = false;
+
+function getMaxEnemiesAllowed() {
+    const forward = !!(moving && backgroundScrolling && facingRight);
+    const base = isMobile ? MAX_ENEMIES_MOBILE : MAX_ENEMIES_DESKTOP;
+    const bonus = isMobile ? MAX_ENEMIES_FORWARD_BONUS_MOBILE : MAX_ENEMIES_FORWARD_BONUS_DESKTOP;
+    return forward ? (base + bonus) : base;
+}
 
 function spawnEnemies() {
     enemySpawnTimer++;
-    
+
     // === CONTROLE DE LIMITE DE INIMIGOS ===
-    if (enemies.length >= MAX_ENEMIES) {
+    const maxEnemiesAllowed = getMaxEnemiesAllowed();
+    if (enemies.length >= maxEnemiesAllowed) {
         return; // Não criar novos inimigos se já atingiu o limite
     }
-    
+
     // Spawn baseado no nível
-    const spawnRate = Math.max(60 - gameState.level * 5, 30);
-    
+    let spawnRate = Math.max(60 - gameState.level * 5, 30);
+
+    // Se o jogador está andando pra frente, aumentar a densidade de inimigos (mais rápido)
+    // (estilo Contra: mais pressão quando avança)
+    if (moving && backgroundScrolling && facingRight) {
+        spawnRate = Math.max(16, Math.floor(spawnRate * 0.60));
+    }
+
+    // Se o jogador está parado/andando pra trás, aliviar um pouco
+    if (!moving || !facingRight) {
+        spawnRate = Math.floor(spawnRate * 1.10);
+    }
+
     if (enemySpawnTimer >= spawnRate) {
         enemySpawnTimer = 0;
-        
+
         if (bossQueued) {
             createEnemy('boss');
             bossQueued = false;
         } else {
             // Escolhe tipo de inimigo baseado no nível
-            const enemyType = gameState.level > 3 && Math.random() > 0.7 ? 'robot' : 'soldier';
+            // Misturar alguns "soldier" e "robot" e variar mais quando anda pra frente
+            const robotChance = (gameState.level > 3 ? 0.30 : 0.15) + ((moving && backgroundScrolling && facingRight) ? 0.10 : 0);
+            const enemyType = Math.random() < robotChance ? 'robot' : 'soldier';
             createEnemy(enemyType);
         }
-        
-        console.log(`Inimigos na tela: ${enemies.length}/${MAX_ENEMIES}`);
+
+        // Debug opcional
+        // console.log(`Inimigos na tela: ${enemies.length}/${maxEnemiesAllowed}`);
     }
     
     // Aumenta nível baseado na pontuação
@@ -3405,6 +3947,9 @@ function gameLoop(currentTime) {
         return;
     }
     
+    // Atualizar mira contínua (segurar ↑/↓)
+    updateAimHoldRotation(currentTime);
+
     // Limpa a tela
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     
@@ -3504,7 +4049,7 @@ function gameLoop(currentTime) {
     } else {
         drawPlayer();
     }
-    
+
     // Desenha HUD
     drawHUD();
     
@@ -3512,6 +4057,9 @@ function gameLoop(currentTime) {
     if (typeof drawScenarioOverlay === 'function') {
         drawScenarioOverlay();
     }
+
+    // Indicador de ângulo de tiro (seta + números) - desenhar por último para ficar sempre visível
+    drawAimIndicator();
     
     requestAnimationFrame(gameLoop);
 }
@@ -3535,6 +4083,9 @@ function restartGame() {
     frameIndex = 0;
     frameCounter = 0;
     posX = 100;
+
+    // Resetar mira 360°
+    aimAngleDisplayDegrees = 0;
     
     // === RESETAR ESCUDO INICIAL ===
     initialShieldActive = true;
@@ -3720,7 +4271,8 @@ function updateGameElementsForResize() {
     for (let platform of platforms) {
         if (platform.type === 'ground') {
             // Plataforma do chão deve estar logo abaixo do nível do solo
-            platform.y = newGroundLevel + (frameHeight * scale);
+            // Topo do chão deve alinhar com o nível em que o personagem pisa
+            platform.y = newGroundLevel;
             platform.width = CANVAS_WIDTH * 3; // Expandir plataforma principal
         } else {
             // Manter plataformas proporcionais à nova altura, mas ajustar baseado no novo chão
@@ -3775,7 +4327,8 @@ let shootTypeSettings = {
     },
     'diagonal-up': { 
         name: 'Diagonal Cima', 
-        forceDirection: { angle: -45, speed: 1 },
+        // OBS: o ângulo real é ajustado em getShootDirectionByType() (10/20/30 + direção do personagem)
+        forceDirection: { angle: -30, speed: 1 },
         description: 'Tiro diagonal para cima'
     },
     down: { 
@@ -4017,26 +4570,21 @@ function handleTouchKeyAction(keyCode, isPressed) {
             break;
             
         case 'ArrowUp':
-            if (hasWeapon && onGround && !isInSpecialAnim) {
-                startSpecialAnimation('weapon_up');
-            } else if (!isInSpecialAnim) {
-                jump();
-            }
+            // Touch: cada toque em ArrowUp sobe +10°
+            aimAngleDisplayDegrees = (aimAngleDisplayDegrees + 10) % 360;
             break;
             
         case 'ArrowDown':
-            if (posY < CANVAS_HEIGHT - (frameHeight * scale) - 100) posY += playerSpeed;
+            // Touch: cada toque em ArrowDown desce -10°
+            aimAngleDisplayDegrees = (aimAngleDisplayDegrees - 10) % 360;
+            if (aimAngleDisplayDegrees < 0) aimAngleDisplayDegrees += 360;
             break;
             
         case 'Space':
             if (!isInSpecialAnim) {
-                if (keys['ArrowUp'] && hasWeapon) {
-                    shootUp();
-                    startSpecialAnimation('weapon_shoot_up');
-                } else {
-                    shoot();
-                    attacking = true;
-                }
+                // Sempre usar shoot() para permitir vários ângulos via combinação de teclas
+                shoot();
+                attacking = true;
             }
             break;
             
@@ -4128,6 +4676,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const fullscreenBtn = document.getElementById('fullscreenBtn');
     if (fullscreenBtn) {
         fullscreenBtn.addEventListener('click', toggleFullscreen);
+    }
+
+    // UI: sliders do mostrador de ângulos
+    const opacityInput = document.getElementById('aimOpacity');
+    const scaleInput = document.getElementById('aimScale');
+
+    if (opacityInput) {
+        // inicial
+        opacityInput.value = String(aimIndicatorOpacity);
+        opacityInput.addEventListener('input', () => {
+            const v = parseFloat(opacityInput.value);
+            if (!Number.isNaN(v)) aimIndicatorOpacity = Math.max(0, Math.min(1, v));
+        });
+    }
+
+    if (scaleInput) {
+        scaleInput.value = String(aimIndicatorScale);
+        scaleInput.addEventListener('input', () => {
+            const v = parseFloat(scaleInput.value);
+            if (!Number.isNaN(v)) aimIndicatorScale = Math.max(0.5, Math.min(3, v));
+        });
     }
     
     // Inicializar sistema de sons

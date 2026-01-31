@@ -29,6 +29,56 @@ body {
     box-sizing: border-box;
 }
 
+/* UI: ajustes do mostrador de ângulos */
+.aim-settings {
+    position: fixed;
+    top: 70px;
+    right: 14px;
+    width: 220px;
+    padding: 10px 10px 8px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.9);
+    font-family: 'Courier New', monospace;
+    z-index: 1002;
+}
+
+.aim-settings-title {
+    font-size: 11px;
+    font-weight: bold;
+    margin-bottom: 6px;
+    color: rgba(255, 215, 0, 0.95);
+}
+
+.aim-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    margin: 6px 0;
+}
+
+.aim-settings-row span {
+    width: 70px;
+    opacity: 0.9;
+}
+
+.aim-settings-row input[type="range"] {
+    flex: 1;
+}
+
+.aim-settings-hint {
+    margin-top: 6px;
+    font-size: 9px;
+    opacity: 0.75;
+}
+
+@media (max-width: 768px) {
+    .aim-settings { display: none; }
+}
+
 canvas {
     background: #222;
     border: 2px solid #555;
